@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestor de Tareas Creativo</title>
+    <!-- Carga de Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configuración de Tailwind para usar la fuente Inter y animaciones personalizadas -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            text-shadow: 0 1px 1px rgba(0,0,0,0.05);
+        }
+        .task-done-text {
+            text-decoration: line-through;
+            color: #94a3b8; /* Gris azulado para tareas completadas */
+        }
+        .progress-bar-container {
+            height: 12px;
+            background-color: #e5e7eb;
+            border-radius: 9999px;
+            overflow: hidden;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .progress-bar {
+            height: 100%;
+            transition: width 0.5s ease-in-out, background-color 0.5s ease-in-out;
+        }
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20%, 60% { transform: translateX(-5px); }
+            40%, 80% { transform: translateX(5px); }
+        }
+        .animate-shake {
+            animation: shake 0.5s ease-in-out;
+        }
+        /* Para que el borde del checkbox sea más visible */
+        .border-3 {
+            border-width: 3px;
+        }
+    </style>
+    <!-- Importaciones de Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let userId = null;
+        let taskCollectionRef;
+        let isAuthReady = false;
+
+        // Initialize Firebase and set up authentication
+        const setupFirebase = async () => {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Authenticate user
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-id').textContent = `ID de Usuario: ${userId.substring(0, 10)}...`;
+                        taskCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/mis_tareas_listado`);
+                        isAuthReady = true;
+                        console.log("Firebase y autenticación listos. ID de usuario:", userId);
+                        // Start listening to tasks once auth is ready
+                        listenForTasks();
+                    } else {
+                        console.log("Usuario no autenticado.");
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error al configurar Firebase:", error);
+            }
+        };
+
+        // Function to listen for real-time task updates
+        const listenForTasks = () => {
+            if (!isAuthReady || !taskCollectionRef) return;
+
+            const q = query(taskCollectionRef);
+
+            onSnapshot(q, (snapshot) => {
+                const tasks = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                })).sort((a, b) => b.timestamp - a.timestamp); // Sort by timestamp descending
+
+                renderTasks(tasks);
+                updateSummary(tasks);
+            }, (error) => {
+                console.error("Error al escuchar tareas:", error);
+            });
+        };
+
+        // DOM Elements
+        const taskList = document.getElementById('task-list');
+        const taskInput = document.getElementById('task-input');
+        const taskDescriptionInput = document.getElementById('task-description-input');
+        const addButton = document.getElementById('add-task-btn');
+        const completedCountSpan = document.getElementById('completed-count');
+        const pendingCountSpan = document.getElementById('pending-count');
+        const reminderMessage = document.getElementById('reminder-message');
+        const progressBar = document.getElementById('progress-bar');
+
+        // --- Core Application Functions (Task Operations) ---
+
+        /**
+         * Renders the list of tasks to the DOM.
+         * @param {Array<Object>} tasks - The list of task objects from Firestore.
+         */
+        const renderTasks = (tasks) => {
+            taskList.innerHTML = ''; // Clear current list
+            if (tasks.length === 0) {
+                taskList.innerHTML = `
+                    <li class="p-4 text-center text-gray-500 italic bg-white rounded-lg shadow-inner">
+                        ¡No hay tareas aún! Agrega tu primera tarea arriba.
+                    </li>
+                `;
+                return;
+            }
+
+            tasks.forEach(task => {
+                const listItem = document.createElement('li');
+                
+                // Estilo creativo de 'tarjeta de nota' con borde de color
+                listItem.className = `flex items-start justify-between p-4 mb-3 rounded-xl shadow-lg transition duration-300 ease-in-out cursor-pointer
+                    ${task.completed 
+                        ? 'bg-green-50/70 border-l-8 border-green-600 opacity-80' 
+                        : 'bg-white border-l-8 border-pink-500 transform hover:scale-[1.01] hover:shadow-xl hover:shadow-pink-300/50'}`;
+                
+                // Contenedor principal de contenido (checkbox, texto y descripción)
+                const taskContent = document.createElement('div');
+                taskContent.className = 'flex items-start flex-grow pr-4';
+                
+                // 1. Checkbox Element - Toggle status
+                const checkbox = document.createElement('div');
+                checkbox.className = `w-7 h-7 rounded-full border-3 flex items-center justify-center transition duration-200 ease-in-out flex-shrink-0 mr-4 mt-1
+                    ${task.completed 
+                        ? 'bg-green-600 border-green-600' 
+                        : 'bg-white border-fuchsia-500 hover:bg-fuchsia-50 hover:border-fuchsia-700'}`;
+                
+                checkbox.innerHTML = task.completed 
+                    ? `<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>`
+                    : '';
+                
+                checkbox.onclick = (e) => {
+                    e.stopPropagation();
+                    toggleTaskCompletion(task.id, task.completed);
+                };
+                
+                // 2. Text and Description Wrapper
+                const textWrapper = document.createElement('div');
+                
+                // 2a. Task Title
+                const taskText = document.createElement('span');
+                taskText.textContent = task.text;
+                taskText.className = `block text-gray-800 font-bold text-lg leading-tight ${task.completed ? 'task-done-text' : ''}`;
+                
+                // 2b. Task Description (creativo y con color diferente)
+                if (task.description && task.description.trim().length > 0) {
+                    const taskDescription = document.createElement('p');
+                    taskDescription.textContent = task.description;
+                    taskDescription.className = `text-sm mt-1 leading-snug ${task.completed ? 'text-gray-400' : 'text-purple-600 italic'}`;
+                    textWrapper.appendChild(taskDescription);
+                }
+
+                textWrapper.prepend(taskText); // Title always on top
+
+                // Hacemos el clic en el elemento completo de la lista para mayor usabilidad
+                listItem.onclick = () => toggleTaskCompletion(task.id, task.completed);
+
+
+                // 3. Delete Button (Queda igual)
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'ml-3 text-red-500 hover:text-red-700 transition-colors p-2 rounded-full hover:bg-red-100 focus:outline-none flex-shrink-0';
+                deleteButton.innerHTML = `
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                    </svg>
+                `;
+                deleteButton.onclick = (e) => {
+                    e.stopPropagation();
+                    deleteTask(task.id);
+                };
+
+                // Ensamblaje del listItem
+                taskContent.appendChild(checkbox);
+                taskContent.appendChild(textWrapper);
+                listItem.appendChild(taskContent);
+                listItem.appendChild(deleteButton);
+                taskList.appendChild(listItem);
+            });
+        };
+
+        /**
+         * Updates the completion summary and dynamic message.
+         * @param {Array<Object>} tasks - The list of task objects.
+         */
+        const updateSummary = (tasks) => {
+            const total = tasks.length;
+            const completed = tasks.filter(t => t.completed).length;
+            const pending = total - completed;
+
+            completedCountSpan.textContent = completed;
+            pendingCountSpan.textContent = pending;
+
+            let percentage = total > 0 ? (completed / total) * 100 : 0;
+            progressBar.style.width = `${percentage}%`;
+
+            if (percentage === 100 && total > 0) {
+                reminderMessage.className = 'text-center text-2xl font-black text-green-700 mt-4 animate-pulse';
+                reminderMessage.textContent = '¡Felicidades! ¡Todas las tareas están completadas! 🌟 ¡Eres imparable!';
+                progressBar.className = 'progress-bar bg-green-500';
+            } else if (pending > 0) {
+                if (pending === total) {
+                    // Nuevo color más brillante para la página limpia
+                    reminderMessage.className = 'text-center text-xl font-extrabold text-cyan-600 mt-4 transition-colors duration-500';
+                    reminderMessage.textContent = '¡Tienes una lista limpia! Es hora de empezar a tachar.';
+                    progressBar.className = 'progress-bar bg-cyan-400';
+                } else {
+                    reminderMessage.className = 'text-center text-xl font-extrabold text-orange-600 mt-4 transition-colors duration-500';
+                    reminderMessage.textContent = `¡Ánimo! Te quedan ${pending} tareas. ¡El éxito te espera! 💪`;
+                    progressBar.className = 'progress-bar bg-orange-400';
+                }
+            } else {
+                reminderMessage.className = 'text-center text-xl font-semibold text-gray-500 mt-4 transition-colors duration-500';
+                reminderMessage.textContent = 'Agrega una tarea para empezar tu día productivo.';
+                // Nuevo color para la barra de progreso vacía
+                progressBar.className = 'progress-bar bg-pink-300';
+            }
+        };
+
+        // --- Firebase Interaction Functions ---
+
+        const addTask = async (text, description) => {
+            if (!isAuthReady) {
+                console.error("Firebase no está listo aún.");
+                return;
+            }
+            try {
+                // Add a new document with a generated ID, including the new 'description' field
+                await addDoc(taskCollectionRef, {
+                    text: text.trim(),
+                    description: description.trim(), // Save the new description
+                    completed: false,
+                    timestamp: Date.now()
+                });
+                taskInput.value = ''; // Clear title input
+                taskDescriptionInput.value = ''; // Clear description input
+            } catch (e) {
+                console.error("Error al añadir documento: ", e);
+            }
+        };
+
+        const toggleTaskCompletion = async (id, currentStatus) => {
+            if (!isAuthReady) return;
+            try {
+                const taskDocRef = doc(db, taskCollectionRef.path, id);
+                await updateDoc(taskDocRef, {
+                    completed: !currentStatus
+                });
+            } catch (e) {
+                console.error("Error al actualizar documento: ", e);
+            }
+        };
+
+        const deleteTask = async (id) => {
+            if (!isAuthReady) return;
+            try {
+                const taskDocRef = doc(db, taskCollectionRef.path, id);
+                await deleteDoc(taskDocRef);
+            } catch (e) {
+                console.error("Error al eliminar documento: ", e);
+            }
+        };
+
+
+        // --- Event Listeners and Initialization ---
+
+        window.onload = () => {
+            setupFirebase();
+            
+            // Add Task listener
+            addButton.addEventListener('click', () => {
+                const text = taskInput.value.trim();
+                const description = taskDescriptionInput.value.trim();
+
+                if (text) {
+                    addTask(text, description);
+                } else {
+                    // Visual feedback for empty TITLE input
+                    taskInput.classList.add('border-red-500', 'placeholder-red-400', 'animate-shake');
+                    setTimeout(() => {
+                        taskInput.classList.remove('border-red-500', 'placeholder-red-400', 'animate-shake');
+                    }, 500);
+                }
+            });
+
+            // Allow adding task with 'Enter' key
+            taskInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    addButton.click();
+                }
+            });
+        };
+    </script>
+</head>
+<!-- Nuevo Fondo de gradiente aún más vibrante -->
+<body class="min-h-screen p-4 sm:p-8 flex items-center justify-center bg-gradient-to-br from-fuchsia-200 via-pink-100 to-cyan-200">
+
+    <!-- Contenedor principal más definido con ring de color y sombra mejorada -->
+    <div class="w-full max-w-2xl bg-white p-6 sm:p-8 rounded-3xl shadow-2xl ring-8 ring-fuchsia-400/50">
+
+        <!-- Header y Título más llamativo -->
+        <header class="text-center mb-8">
+            <h1 class="text-5xl font-black text-fuchsia-800 tracking-tight">Mi Diario de Tareas ✨</h1>
+            <p class="text-lg text-pink-600 font-semibold mt-2">¡Escribe tu título y tu inspiración para el día!</p>
+            <p id="user-id" class="text-xs text-gray-500 mt-2"></p>
+        </header>
+
+        <!-- Inputs Creativos para Nueva Tarea -->
+        <div class="space-y-3">
+            <!-- Input y Botón en la misma fila para el Título -->
+            <div class="flex space-x-2">
+                <input type="text" id="task-input" placeholder="Título de la tarea (ej: 'Proyecto Atlas')"
+                    class="flex-grow p-4 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-4 focus:ring-fuchsia-300 transition duration-300 shadow-inner"
+                    maxlength="100">
+                <!-- Botón con nuevo gradiente de color -->
+                <button id="add-task-btn"
+                        class="bg-gradient-to-r from-fuchsia-600 to-pink-600 hover:from-fuchsia-700 hover:to-pink-700 text-white font-black py-3 px-5 rounded-xl transition duration-300 ease-in-out transform hover:scale-105 shadow-lg hover:shadow-xl">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                </button>
+            </div>
+            
+            <!-- Área de Texto para la Descripción Detallada -->
+            <div>
+                <textarea id="task-description-input" placeholder="Detalles, ideas o descripción creativa de la tarea (Opcional, máx 300 caracteres)"
+                    class="w-full p-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-pink-400 transition duration-300 shadow-inner h-20 resize-none"
+                    maxlength="300"></textarea>
+            </div>
+        </div>
+        <!-- Fin de Inputs -->
+
+        <!-- Resumen y Progreso - ¡MÁS CREATIVO Y ENTENDIBLE! -->
+        <div class="bg-white p-6 rounded-2xl mt-8 mb-6 shadow-xl border border-fuchsia-200 transform hover:scale-[1.01] transition duration-300">
+            <h2 class="text-3xl font-extrabold text-center text-fuchsia-600 mb-4 tracking-wider">Tu Panorama de Productividad 🎯</h2>
+            <div class="flex justify-around items-center mb-4">
+                <div class="text-center p-3 rounded-xl bg-green-50/50">
+                    <p class="text-lg font-bold text-green-700">🏆 Logros</p>
+                    <span id="completed-count" class="text-5xl font-black text-green-600 drop-shadow-lg">0</span>
+                </div>
+                <div class="text-center p-3 rounded-xl bg-orange-50/50">
+                    <p class="text-lg font-bold text-orange-700">⏳ En Foco</p>
+                    <span id="pending-count" class="text-5xl font-black text-orange-500 drop-shadow-lg">0</span>
+                </div>
+            </div>
+            
+            <!-- Barra de Progreso -->
+            <div class="progress-bar-container mt-4">
+                <div id="progress-bar" class="progress-bar bg-fuchsia-500" style="width: 0%;"></div>
+            </div>
+        </div>
+
+        <!-- Mensaje Dinámico de Recordatorio/Motivación -->
+        <p id="reminder-message" class="text-center text-xl font-semibold text-gray-500 mt-4 transition-colors duration-500">
+            Agrega una tarea para empezar tu día productivo.
+        </p>
+
+        <!-- Lista Principal de Tareas -->
+        <ul id="task-list" class="mt-8 space-y-3">
+            <!-- Las tareas se inyectarán aquí por JavaScript -->
+        </ul>
+        
+    </div>
+
+</body>
+</html>
